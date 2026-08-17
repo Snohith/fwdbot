@@ -27,7 +27,9 @@ API_ID = int(os.environ.get("API_ID", 0))  # Fix: Pyrogram requires int, not str
 API_HASH = os.environ.get("API_HASH")
 SESSION_STRING = os.environ.get("SESSION_STRING")
 
-SOURCE_CHANNEL = int(os.environ.get("SOURCE_CHANNEL_ID", "-1003405576403"))
+source_env = os.environ.get("SOURCE_CHANNEL_IDS") or os.environ.get("SOURCE_CHANNEL_ID", "-1003405576403")
+SOURCE_CHANNELS = [int(x.strip()) for x in source_env.split(",") if x.strip()]
+
 DESTINATION_CHANNEL = int(os.environ.get("DESTINATION_CHANNEL_ID", "-1003912457227"))
 
 # Load Replacements
@@ -226,7 +228,7 @@ async def _forward_single(client: Client, message: Message, reply_to=None):
 # ---------------------------------------------------------------------------
 # Handler — new messages
 # ---------------------------------------------------------------------------
-@app.on_message(filters.chat(SOURCE_CHANNEL))
+@app.on_message(filters.chat(SOURCE_CHANNELS))
 async def handle_new_message(client: Client, message: Message):
     text_to_check = message.caption if message.media else message.text
     if contains_filter_word(text_to_check):
@@ -273,7 +275,7 @@ async def handle_new_message(client: Client, message: Message):
 # ---------------------------------------------------------------------------
 # Handler — edited messages
 # ---------------------------------------------------------------------------
-@app.on_edited_message(filters.chat(SOURCE_CHANNEL))
+@app.on_edited_message(filters.chat(SOURCE_CHANNELS))
 async def handle_edited_message(client: Client, message: Message):
     text_to_check = message.caption if message.media else message.text
     dest_id = db_get(message.id)
