@@ -225,6 +225,44 @@ async def _forward_single(client: Client, message: Message, reply_to=None):
     return None
 
 
+import smm_api
+
+# ---------------------------------------------------------------------------
+# SMM Panel Commands (Restricted to the owner via filters.me)
+# ---------------------------------------------------------------------------
+@app.on_message(filters.me & filters.command(["balance", "order", "status"]))
+async def smm_commands(client: Client, message: Message):
+    cmd = message.command
+    if cmd[0] == "balance":
+        resp = await smm_api.get_balance()
+        if "balance" in resp:
+            await message.reply(f"💰 **Balance:** {resp['balance']} {resp.get('currency', 'USD')}")
+        else:
+            await message.reply(f"❌ Error: {resp.get('error', 'Unknown')}")
+            
+    elif cmd[0] == "order":
+        if len(cmd) < 4:
+            await message.reply("Usage: `/order <service_id> <link> <quantity>`")
+            return
+        resp = await smm_api.place_order(cmd[1], cmd[2], cmd[3])
+        if "order" in resp:
+            await message.reply(f"✅ **Order Placed!**\nOrder ID: `{resp['order']}`")
+        else:
+            await message.reply(f"❌ Error: {resp.get('error', 'Unknown')}")
+            
+    elif cmd[0] == "status":
+        if len(cmd) < 2:
+            await message.reply("Usage: `/status <order_id>`")
+            return
+        resp = await smm_api.get_status(cmd[1])
+        if "status" in resp:
+            msg = f"📊 **Order Status:** {resp['status']}\n"
+            msg += f"Charge: {resp.get('charge', '0')}\n"
+            msg += f"Remains: {resp.get('remains', '0')}"
+            await message.reply(msg)
+        else:
+            await message.reply(f"❌ Error: {resp.get('error', 'Unknown')}")
+
 # ---------------------------------------------------------------------------
 # Debug Logger — trace all incoming messages to find the exact Chat ID
 # ---------------------------------------------------------------------------
