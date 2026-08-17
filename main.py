@@ -226,6 +226,14 @@ async def _forward_single(client: Client, message: Message, reply_to=None):
 
 
 # ---------------------------------------------------------------------------
+# Debug Logger — trace all incoming messages to find the exact Chat ID
+# ---------------------------------------------------------------------------
+@app.on_message(filters.all, group=-1)
+async def log_all_incoming(client: Client, message: Message):
+    chat_id = message.chat.id if message.chat else "Unknown"
+    logger.info(f"DEBUG: Received message from chat {chat_id}")
+
+# ---------------------------------------------------------------------------
 # Handler — new messages
 # ---------------------------------------------------------------------------
 @app.on_message(filters.chat(SOURCE_CHANNELS))
