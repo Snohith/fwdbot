@@ -394,6 +394,22 @@ def run_web():
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False, debug=False)
 
 
+from pyrogram import idle
+
+async def run_bot():
+    await app.start()
+    logger.info("Caching peers to fix 'Peer id invalid' errors...")
+    try:
+        # Iterating through dialogs forces Pyrogram to cache all channel IDs from Telegram
+        async for _ in app.get_dialogs():
+            pass
+    except Exception as e:
+        logger.error(f"Failed to cache peers: {e}")
+    
+    logger.info("Bot is fully ready and listening for messages!")
+    await idle()
+    await app.stop()
+
 if __name__ == "__main__":
     if not API_ID or not API_HASH or not SESSION_STRING:
         logger.error("Missing API_ID, API_HASH, or SESSION_STRING! Cannot start bot.")
@@ -402,4 +418,4 @@ if __name__ == "__main__":
         Thread(target=run_web, daemon=True).start()
 
         logger.info("Starting Telegram User Bot...")
-        app.run()
+        app.run(run_bot())
