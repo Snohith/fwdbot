@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 API_ID = int(os.environ.get("API_ID", 0))  # Fix: Pyrogram requires int, not str
 API_HASH = os.environ.get("API_HASH")
 SESSION_STRING = os.environ.get("SESSION_STRING")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 source_env = os.environ.get("SOURCE_CHANNEL_IDS") or os.environ.get("SOURCE_CHANNEL_ID", "-1003405576403")
 SOURCE_CHANNELS = [int(x.strip()) for x in source_env.split(",") if x.strip()]
@@ -65,6 +66,10 @@ def init_db():
         "CREATE TABLE IF NOT EXISTS message_map "
         "(source_id INTEGER PRIMARY KEY, dest_id INTEGER NOT NULL)"
     )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS user_api_keys "
+        "(user_id INTEGER PRIMARY KEY, api_key TEXT NOT NULL)"
+    )
     conn.commit()
     conn.close()
 
@@ -88,6 +93,24 @@ def db_set(source_id: int, dest_id: int):
 def db_delete(source_id: int):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM message_map WHERE source_id = ?", (source_id,))
+    conn.commit()
+    conn.close()
+
+def db_save_api_key(user_id: int, api_key: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("INSERT OR REPLACE INTO user_api_keys (user_id, api_key) VALUES (?, ?)", (user_id, api_key))
+    conn.commit()
+    conn.close()
+
+def db_get_api_key(user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute("SELECT api_key FROM user_api_keys WHERE user_id = ?", (user_id,)).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def db_delete_api_key(user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM user_api_keys WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
 
@@ -171,13 +194,20 @@ async def _flush_album(client: Client, media_group_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Pyrogram client
+# Pyrogram clients
 # ---------------------------------------------------------------------------
 app = Client(
     "my_account",
     api_id=API_ID,
     api_hash=API_HASH,
     session_string=SESSION_STRING
+)
+
+smm_bot = Client(
+    "smm_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
 )
 
 
@@ -228,13 +258,32 @@ async def _forward_single(client: Client, message: Message, reply_to=None):
 import smm_api
 
 # ---------------------------------------------------------------------------
-# SMM Panel Commands (Restricted to the owner via filters.me)
+# SMM Panel Commands (Public Bot Token)
 # ---------------------------------------------------------------------------
-@app.on_message(filters.me & filters.command(["balance", "order", "status"]))
+@smm_bot.on_message(filters.command(["login"]))
+async def handle_login(client: Client, message: Message):
+    cmd = message.command
+    if len(cmd) < 2:
+        await message.reply("Usage: `/login <your_api_key>`")
+        return
+    db_save_api_key(message.from_user.id, cmd[1])
+    await message.reply("✅ Successfully logged in! You can now use `/balance` or place orders.")
+
+@smm_bot.on_message(filters.command(["logout"]))
+async def handle_logout(client: Client, message: Message):
+    db_delete_api_key(message.from_user.id)
+    await message.reply("✅ Successfully logged out.")
+
+@smm_bot.on_message(filters.command(["balance", "order", "status"]))
 async def smm_commands(client: Client, message: Message):
+    user_key = db_get_api_key(message.from_user.id)
+    if not user_key:
+        await message.reply("❌ Please `/login <your_api_key>` first.")
+        return
+        
     cmd = message.command
     if cmd[0] == "balance":
-        resp = await smm_api.get_balance()
+        resp = await smm_api.get_balance(user_key)
         if "balance" in resp:
             await message.reply(f"💰 **Balance:** {resp['balance']} {resp.get('currency', 'USD')}")
         else:
@@ -244,7 +293,7 @@ async def smm_commands(client: Client, message: Message):
         if len(cmd) < 4:
             await message.reply("Usage: `/order <service_id> <link> <quantity>`")
             return
-        resp = await smm_api.place_order(cmd[1], cmd[2], cmd[3])
+        resp = await smm_api.place_order(user_key, cmd[1], cmd[2], cmd[3])
         if "order" in resp:
             await message.reply(f"✅ **Order Placed!**\nOrder ID: `{resp['order']}`")
         else:
@@ -254,7 +303,7 @@ async def smm_commands(client: Client, message: Message):
         if len(cmd) < 2:
             await message.reply("Usage: `/status <order_id>`")
             return
-        resp = await smm_api.get_status(cmd[1])
+        resp = await smm_api.get_status(user_key, cmd[1])
         if "status" in resp:
             msg = f"📊 **Order Status:** {resp['status']}\n"
             msg += f"Charge: {resp.get('charge', '0')}\n"
@@ -436,6 +485,7 @@ from pyrogram import idle
 
 async def run_bot():
     await app.start()
+    await smm_bot.start()
     logger.info("Caching peers to fix 'Peer id invalid' errors...")
     try:
         # Iterating through dialogs forces Pyrogram to cache all channel IDs from Telegram
@@ -444,16 +494,17 @@ async def run_bot():
     except Exception as e:
         logger.error(f"Failed to cache peers: {e}")
     
-    logger.info("Bot is fully ready and listening for messages!")
+    logger.info("Both Bots are fully ready and listening for messages!")
     await idle()
     await app.stop()
+    await smm_bot.stop()
 
 if __name__ == "__main__":
-    if not API_ID or not API_HASH or not SESSION_STRING:
-        logger.error("Missing API_ID, API_HASH, or SESSION_STRING! Cannot start bot.")
+    if not API_ID or not API_HASH or not SESSION_STRING or not BOT_TOKEN:
+        logger.error("Missing API_ID, API_HASH, SESSION_STRING, or BOT_TOKEN! Cannot start bot.")
     else:
         logger.info("Starting Web Server...")
         Thread(target=run_web, daemon=True).start()
 
-        logger.info("Starting Telegram User Bot...")
+        logger.info("Starting Telegram Bots...")
         app.run(run_bot())

@@ -6,11 +6,10 @@ logger = logging.getLogger(__name__)
 
 # Config
 SMM_API_URL = os.environ.get("SMM_API_URL", "https://cheapestsmmpanels.com/api/v2")
-SMM_API_KEY = os.environ.get("SMM_API_KEY", "3b754c7eb03d8690483e98a508f8283a")
 
-async def _post(payload: dict) -> dict:
+async def _post(api_key: str, payload: dict) -> dict:
     """Helper to make POST requests to the SMM API."""
-    payload['key'] = SMM_API_KEY
+    payload['key'] = api_key
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(SMM_API_URL, data=payload) as response:
@@ -19,19 +18,19 @@ async def _post(payload: dict) -> dict:
         logger.error(f"SMM API Error: {e}")
         return {"error": str(e)}
 
-async def get_balance():
-    return await _post({"action": "balance"})
+async def get_balance(api_key: str):
+    return await _post(api_key, {"action": "balance"})
 
-async def place_order(service_id: str, link: str, quantity: str):
-    return await _post({
+async def place_order(api_key: str, service_id: str, link: str, quantity: str):
+    return await _post(api_key, {
         "action": "add",
         "service": service_id,
         "link": link,
         "quantity": quantity
     })
 
-async def get_status(order_id: str):
-    return await _post({
+async def get_status(api_key: str, order_id: str):
+    return await _post(api_key, {
         "action": "status",
         "order": order_id
     })
