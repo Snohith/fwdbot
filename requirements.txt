@@ -1,0 +1,4 @@
+pyrogram==2.0.106
+tgcrypto==1.2.5
+Flask==3.0.3
+gunicorn==21.2.0
