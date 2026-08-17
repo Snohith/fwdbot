@@ -13,6 +13,8 @@ except RuntimeError:
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
+from pyrogram.enums import ParseMode
+from pyrogram.parser import html
 from flask import Flask
 from threading import Thread
 
@@ -99,21 +101,19 @@ def apply_replacements(text: str):
         return text, False
     original = text
     for old, new in replacements.items():
-        text = text.replace(old, new)
+        pattern = re.compile(re.escape(old), re.IGNORECASE)
+        # re.sub processes \ as escapes, so we need to escape the replacement string just in case
+        new_escaped = new.replace('\\', r'\\')
+        text = pattern.sub(new_escaped, text)
     return text, (text != original)
 
 
-def contains_filter_word(text: str) -> bool:
-    """
-    Bug 3 Fix — word-boundary regex matching prevents false positives.
-    e.g. filter word 'ad' no longer matches 'advanced', 'road', 'download'.
-    """
+def contains_filter_word(text):
     if not text:
         return False
-    lower_text = text.lower()
     for word in filter_words:
         pattern = r'\b' + re.escape(word.lower()) + r'\b'
-        if re.search(pattern, lower_text):
+        if re.search(pattern, text.lower()):
             return True
     return False
 
@@ -187,29 +187,34 @@ async def _forward_single(client: Client, message: Message, reply_to=None):
     Apply replacements and forward one message to DESTINATION_CHANNEL.
     Returns the sent Message object, or None if message type is unsupported.
     """
-    text_to_check = message.caption if message.media else message.text
-    new_text, was_replaced = apply_replacements(text_to_check)
+    text = message.caption if message.media else message.text
+    entities = message.caption_entities if message.media else message.entities
+
+    html_text = text
+    if text and entities:
+        html_text = html.HTML(client).unparse(text, entities)
+        
+    new_html, was_replaced = apply_replacements(html_text)
 
     if message.media:
-        # Bug 4 Fix: only pass caption= kwarg when there is an actual caption.
-        # Passing caption=None would explicitly wipe the original embedded caption.
         kwargs = {"reply_to_message_id": reply_to}
-        if new_text is not None:
-            kwargs["caption"] = new_text
-            # Bug 5 Fix: preserve original caption entities when no replacement was made.
-            # Entity byte offsets become wrong after text length changes from replacement.
-            if not was_replaced and message.caption_entities:
+        if new_html is not None:
+            kwargs["caption"] = new_html
+            if was_replaced or entities:
+                kwargs["parse_mode"] = ParseMode.HTML
+            elif not was_replaced and message.caption_entities:
                 kwargs["caption_entities"] = message.caption_entities
         return await message.copy(DESTINATION_CHANNEL, **kwargs)
 
     elif message.text:
         kwargs = {"reply_to_message_id": reply_to}
-        # Bug 5 Fix: preserve original text entities when no replacement was made.
-        if not was_replaced and message.entities:
+        if was_replaced or entities:
+            kwargs["parse_mode"] = ParseMode.HTML
+        elif not was_replaced and message.entities:
             kwargs["entities"] = message.entities
         return await client.send_message(
             DESTINATION_CHANNEL,
-            text=new_text,
+            text=new_html,
             **kwargs
         )
 
@@ -320,14 +325,18 @@ async def handle_edited_message(client: Client, message: Message):
             logger.error(f"Failed to delete destination message {dest_id}: {e}")
         return
 
-    # Normal edit — apply replacements and update destination
-    new_text, _ = apply_replacements(text_to_check)
+    text = message.caption if message.media else message.text
+    entities = message.caption_entities if message.media else message.entities
+    
+    html_text = text
+    if text and entities:
+        html_text = html.HTML(client).unparse(text, entities)
+        
+    new_html, was_replaced = apply_replacements(html_text)
 
     async def _do_edit():
         if message.media:
-            # Bug 9 Fix: if caption was removed (new_text is None), skip the edit.
-            # Passing caption=None to edit_message_caption raises an API error.
-            if new_text is None:
+            if new_html is None:
                 logger.info(
                     f"Source media {message.id} caption removed — skipping destination edit."
                 )
@@ -335,13 +344,15 @@ async def handle_edited_message(client: Client, message: Message):
             await client.edit_message_caption(
                 chat_id=DESTINATION_CHANNEL,
                 message_id=dest_id,
-                caption=new_text
+                caption=new_html,
+                parse_mode=ParseMode.HTML if (was_replaced or entities) else None
             )
         elif message.text:
             await client.edit_message_text(
                 chat_id=DESTINATION_CHANNEL,
                 message_id=dest_id,
-                text=new_text
+                text=new_html,
+                parse_mode=ParseMode.HTML if (was_replaced or entities) else None
             )
         logger.info(f"Edited destination message {dest_id} (source {message.id})")
 
