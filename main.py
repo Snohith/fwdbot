@@ -12,7 +12,7 @@ except RuntimeError:
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, MessageNotModified
 from pyrogram.enums import ParseMode
 from pyrogram.parser import html
 from flask import Flask
@@ -463,6 +463,8 @@ async def handle_edited_message(client: Client, message: Message):
             await _do_edit()
         except Exception as e2:
             logger.error(f"Failed to edit destination message {dest_id} after retry: {e2}")
+    except MessageNotModified:
+        logger.info(f"Message {message.id} not modified in destination (no changes).")
     except Exception as e:
         logger.error(f"Failed to edit message {message.id}: {e}")
 
