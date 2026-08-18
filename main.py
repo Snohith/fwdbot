@@ -28,10 +28,14 @@ API_HASH = os.environ.get("API_HASH")
 SESSION_STRING = os.environ.get("SESSION_STRING")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-source_env = os.environ.get("SOURCE_CHANNEL_IDS") or os.environ.get("SOURCE_CHANNEL_ID", "-1003405576403")
-SOURCE_CHANNELS = [int(x.strip()) for x in source_env.split(",") if x.strip()]
-
+# Parse all source channels from both possible env var names
+raw_sources = f"{os.environ.get('SOURCE_CHANNEL_IDS', '')},{os.environ.get('SOURCE_CHANNEL_ID', '')}"
+if not raw_sources.replace(',', '').strip():
+    raw_sources = "-1003405576403"
+SOURCE_CHANNELS = list(set(int(x.strip()) for x in raw_sources.split(",") if x.strip()))
+logger.info(f"Configured SOURCE_CHANNELS: {SOURCE_CHANNELS}")
 DESTINATION_CHANNEL = int(os.environ.get("DESTINATION_CHANNEL_ID", "-1003912457227"))
+logger.info(f"Configured DESTINATION_CHANNEL: {DESTINATION_CHANNEL}")
 
 # Load Replacements
 replacements = {
