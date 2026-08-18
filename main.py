@@ -169,10 +169,46 @@ async def _flush_album(client: Client, media_group_id: str):
         reply_to = db_get(first.chat.id, first.reply_to_message_id)
 
     async def _do_copy():
-        return await client.copy_media_group(
+        from pyrogram.types import InputMediaPhoto, InputMediaVideo, InputMediaAudio, InputMediaDocument
+        
+        media_group = []
+        for msg in messages:
+            kwargs = {}
+            if msg == first:
+                # Apply replacements to the caption of the first item
+                text = msg.caption if msg.media else msg.text
+                entities = msg.caption_entities if msg.media else msg.entities
+                html_text = text
+                if text and entities:
+                    html_text = html.HTML(client).unparse(text, entities)
+                new_html, was_replaced = apply_replacements(html_text)
+                
+                # Strip custom emojis to prevent Premium-required API errors
+                if new_html:
+                    new_html = re.sub(r'<emoji id="[^"]+">(.*?)</emoji>', r'\1', new_html)
+                
+                if new_html is not None:
+                    kwargs["caption"] = new_html
+                    if was_replaced or entities:
+                        kwargs["parse_mode"] = ParseMode.HTML
+                    elif not was_replaced and msg.caption_entities:
+                        kwargs["caption_entities"] = msg.caption_entities
+                        
+            if msg.photo:
+                media_group.append(InputMediaPhoto(msg.photo.file_id, **kwargs))
+            elif msg.video:
+                media_group.append(InputMediaVideo(msg.video.file_id, **kwargs))
+            elif msg.audio:
+                media_group.append(InputMediaAudio(msg.audio.file_id, **kwargs))
+            elif msg.document:
+                media_group.append(InputMediaDocument(msg.document.file_id, **kwargs))
+
+        if not media_group:
+            return []
+
+        return await client.send_media_group(
             chat_id=DESTINATION_CHANNEL,
-            from_chat_id=first.chat.id,
-            message_id=first.id,
+            media=media_group,
             reply_to_message_id=reply_to
         )
 
@@ -229,6 +265,10 @@ async def _forward_single(client: Client, message: Message, reply_to=None):
         html_text = html.HTML(client).unparse(text, entities)
         
     new_html, was_replaced = apply_replacements(html_text)
+
+    # Strip custom emojis to prevent Premium-required API errors
+    if new_html:
+        new_html = re.sub(r'<emoji id="[^"]+">(.*?)</emoji>', r'\1', new_html)
 
     if message.media:
         kwargs = {"reply_to_message_id": reply_to}
@@ -432,6 +472,10 @@ async def handle_edited_message(client: Client, message: Message):
         html_text = html.HTML(client).unparse(text, entities)
         
     new_html, was_replaced = apply_replacements(html_text)
+
+    # Strip custom emojis to prevent Premium-required API errors
+    if new_html:
+        new_html = re.sub(r'<emoji id="[^"]+">(.*?)</emoji>', r'\1', new_html)
 
     async def _do_edit():
         if message.media:
