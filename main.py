@@ -55,16 +55,17 @@ if "FILTER_WORDS_JSON" in os.environ:
         logger.error(f"Error parsing FILTER_WORDS_JSON: {e}")
 
 # ---------------------------------------------------------------------------
-# Bug 2 Fix — SQLite-backed persistent message_map
+# Bug 2 Fix — SQLite-backed persistent message_map_v2
 # Survives Render normal restarts (disk persists; wiped only on full redeploy).
 # ---------------------------------------------------------------------------
-DB_PATH = "message_map.db"
+DB_PATH = "message_map_v2.db"
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS message_map "
-        "(source_id INTEGER PRIMARY KEY, dest_id INTEGER NOT NULL)"
+        "CREATE TABLE IF NOT EXISTS message_map_v2 "
+        "(source_chat_id INTEGER, source_id INTEGER, dest_id INTEGER NOT NULL, "
+        "PRIMARY KEY (source_chat_id, source_id))"
     )
     conn.execute(
         "CREATE TABLE IF NOT EXISTS user_api_keys "
@@ -73,26 +74,27 @@ def init_db():
     conn.commit()
     conn.close()
 
-def db_get(source_id: int):
+def db_get(source_chat_id: int, source_id: int):
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
-        "SELECT dest_id FROM message_map WHERE source_id = ?", (source_id,)
+        "SELECT dest_id FROM message_map_v2 WHERE source_chat_id = ? AND source_id = ?", 
+        (source_chat_id, source_id)
     ).fetchone()
     conn.close()
     return row[0] if row else None
 
-def db_set(source_id: int, dest_id: int):
+def db_set(source_chat_id: int, source_id: int, dest_id: int):
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
-        "INSERT OR REPLACE INTO message_map (source_id, dest_id) VALUES (?, ?)",
-        (source_id, dest_id)
+        "INSERT OR REPLACE INTO message_map_v2 (source_chat_id, source_id, dest_id) VALUES (?, ?, ?)",
+        (source_chat_id, source_id, dest_id)
     )
     conn.commit()
     conn.close()
 
-def db_delete(source_id: int):
+def db_delete(source_chat_id: int, source_id: int):
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("DELETE FROM message_map WHERE source_id = ?", (source_id,))
+    conn.execute("DELETE FROM message_map_v2 WHERE source_chat_id = ? AND source_id = ?", (source_chat_id, source_id))
     conn.commit()
     conn.close()
 
@@ -164,7 +166,7 @@ async def _flush_album(client: Client, media_group_id: str):
 
     reply_to = None
     if first.reply_to_message_id:
-        reply_to = db_get(first.reply_to_message_id)
+        reply_to = db_get(first.chat.id, first.reply_to_message_id)
 
     async def _do_copy():
         return await client.copy_media_group(
@@ -177,7 +179,7 @@ async def _flush_album(client: Client, media_group_id: str):
     try:
         sent_list = await _do_copy()
         for src_msg, dst_msg in zip(messages, sent_list):
-            db_set(src_msg.id, dst_msg.id)
+            db_set(src_msg.chat.id, src_msg.id, dst_msg.id)
         logger.info(f"Forwarded album {media_group_id} ({len(messages)} items)")
     except FloodWait as e:
         logger.warning(f"FloodWait {e.value}s on album {media_group_id}, retrying...")
@@ -185,7 +187,7 @@ async def _flush_album(client: Client, media_group_id: str):
         try:
             sent_list = await _do_copy()
             for src_msg, dst_msg in zip(messages, sent_list):
-                db_set(src_msg.id, dst_msg.id)
+                db_set(src_msg.chat.id, src_msg.id, dst_msg.id)
             logger.info(f"Forwarded album {media_group_id} after FloodWait")
         except Exception as e2:
             logger.error(f"Failed to forward album {media_group_id} after retry: {e2}")
@@ -342,7 +344,7 @@ async def handle_new_message(client: Client, message: Message):
     # Resolve reply target from persistent SQLite map
     reply_to = None
     if message.reply_to_message_id:
-        reply_to = db_get(message.reply_to_message_id)
+        reply_to = db_get(message.chat.id, message.reply_to_message_id)
 
     async def _send():
         return await _forward_single(client, message, reply_to=reply_to)
@@ -350,7 +352,7 @@ async def handle_new_message(client: Client, message: Message):
     try:
         sent_msg = await _send()
         if sent_msg:
-            db_set(message.id, sent_msg.id)
+            db_set(message.chat.id, message.id, sent_msg.id)
             logger.info(f"Forwarded message {message.id} -> {sent_msg.id}")
     except FloodWait as e:
         # Bug 1 Fix: retry once after the mandatory wait instead of dropping the message
@@ -359,7 +361,7 @@ async def handle_new_message(client: Client, message: Message):
         try:
             sent_msg = await _send()
             if sent_msg:
-                db_set(message.id, sent_msg.id)
+                db_set(message.chat.id, message.id, sent_msg.id)
                 logger.info(f"Forwarded message {message.id} -> {sent_msg.id} (after FloodWait)")
         except Exception as e2:
             logger.error(f"Failed to forward message {message.id} after FloodWait retry: {e2}")
@@ -373,7 +375,7 @@ async def handle_new_message(client: Client, message: Message):
 @app.on_edited_message(filters.chat(SOURCE_CHANNELS))
 async def handle_edited_message(client: Client, message: Message):
     text_to_check = message.caption if message.media else message.text
-    dest_id = db_get(message.id)
+    dest_id = db_get(message.chat.id, message.id)
 
     # -----------------------------------------------------------------------
     # Bug 8 Fix: message was originally filtered (no dest_id),
@@ -386,11 +388,11 @@ async def handle_edited_message(client: Client, message: Message):
             )
             reply_to = None
             if message.reply_to_message_id:
-                reply_to = db_get(message.reply_to_message_id)
+                reply_to = db_get(message.chat.id, message.reply_to_message_id)
             try:
                 sent_msg = await _forward_single(client, message, reply_to=reply_to)
                 if sent_msg:
-                    db_set(message.id, sent_msg.id)
+                    db_set(message.chat.id, message.id, sent_msg.id)
                     logger.info(f"Late-forwarded {message.id} -> {sent_msg.id}")
             except FloodWait as e:
                 logger.warning(f"FloodWait {e.value}s on late-forward {message.id}, retrying...")
@@ -398,7 +400,7 @@ async def handle_edited_message(client: Client, message: Message):
                 try:
                     sent_msg = await _forward_single(client, message, reply_to=reply_to)
                     if sent_msg:
-                        db_set(message.id, sent_msg.id)
+                        db_set(message.chat.id, message.id, sent_msg.id)
                         logger.info(f"Late-forwarded {message.id} -> {sent_msg.id} (after FloodWait)")
                 except Exception as e2:
                     logger.error(f"Failed late-forward for {message.id} after retry: {e2}")
@@ -413,7 +415,7 @@ async def handle_edited_message(client: Client, message: Message):
     if contains_filter_word(text_to_check):
         try:
             await client.delete_messages(DESTINATION_CHANNEL, dest_id)
-            db_delete(message.id)
+            db_delete(message.chat.id, message.id)
             logger.info(
                 f"Deleted destination message {dest_id} "
                 f"(source {message.id} edited to contain filter word)."
