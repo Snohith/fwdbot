@@ -10,13 +10,41 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-from pyrogram import Client, filters
+from pyrogram import Client, filters, utils as pyrogram_utils
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait, MessageNotModified
 from pyrogram.enums import ParseMode
 from pyrogram.parser import html
 from flask import Flask
 from threading import Thread
+
+# ---------------------------------------------------------------------------
+# Critical Bug Fix — 64-bit Telegram Channel IDs in Pyrogram 2.0.x
+# Pyrogram hardcodes MIN_CHANNEL_ID = -1002147483647 which causes
+# ValueError: Peer id invalid for modern channels (like -1003405576403).
+# ---------------------------------------------------------------------------
+pyrogram_utils.MIN_CHANNEL_ID = -1009999999999999
+pyrogram_utils.MAX_CHANNEL_ID = -1000000000000
+pyrogram_utils.MIN_CHAT_ID = -999999999999999
+pyrogram_utils.MAX_USER_ID = 999999999999999
+
+def _patched_get_peer_type(peer_id: int) -> str:
+    if peer_id < 0:
+        if -1000000000000 < peer_id:
+            return "chat"
+        if peer_id <= -1000000000000:
+            return "channel"
+    elif peer_id > 0:
+        return "user"
+    raise ValueError(f"Peer id invalid: {peer_id}")
+
+def _patched_get_channel_id(peer_id: int) -> int:
+    if peer_id <= -1000000000000:
+        return -1000000000000 - peer_id
+    return peer_id
+
+pyrogram_utils.get_peer_type = _patched_get_peer_type
+pyrogram_utils.get_channel_id = _patched_get_channel_id
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
