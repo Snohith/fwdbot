@@ -25,23 +25,20 @@ from threading import Thread
 # ---------------------------------------------------------------------------
 pyrogram_utils.MIN_CHANNEL_ID = -1009999999999999
 pyrogram_utils.MAX_CHANNEL_ID = -1000000000000
-pyrogram_utils.MIN_CHAT_ID = -999999999999999
+pyrogram_utils.MIN_CHAT_ID = -2147483647
 pyrogram_utils.MAX_USER_ID = 999999999999999
 
 def _patched_get_peer_type(peer_id: int) -> str:
     if peer_id < 0:
-        if -1000000000000 < peer_id:
-            return "chat"
         if peer_id <= -1000000000000:
             return "channel"
+        return "chat"
     elif peer_id > 0:
         return "user"
     raise ValueError(f"Peer id invalid: {peer_id}")
 
 def _patched_get_channel_id(peer_id: int) -> int:
-    if peer_id <= -1000000000000:
-        return -1000000000000 - peer_id
-    return peer_id
+    return -1000000000000 - peer_id
 
 pyrogram_utils.get_peer_type = _patched_get_peer_type
 pyrogram_utils.get_channel_id = _patched_get_channel_id
@@ -273,13 +270,79 @@ app = Client(
     session_string=SESSION_STRING
 )
 
-smm_bot = Client(
-    "smm_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
+smm_bot = None
+if BOT_TOKEN:
+    smm_bot = Client(
+        "smm_bot",
+        api_id=API_ID,
+        api_hash=API_HASH,
+        bot_token=BOT_TOKEN
+    )
 
+    import smm_api
+
+    # ---------------------------------------------------------------------------
+    # SMM Panel Commands (Public Bot Token)
+    # ---------------------------------------------------------------------------
+    @smm_bot.on_message(filters.command(["login"]))
+    async def handle_login(client: Client, message: Message):
+        cmd = message.command
+        if len(cmd) < 2:
+            await message.reply("Usage: `/login <your_api_key>`")
+            return
+        db_save_api_key(message.from_user.id, cmd[1])
+        await message.reply("✅ Successfully logged in! You can now use `/balance` or place orders.")
+
+    @smm_bot.on_message(filters.command(["logout"]))
+    async def handle_logout(client: Client, message: Message):
+        db_delete_api_key(message.from_user.id)
+        await message.reply("✅ Successfully logged out.")
+
+    @smm_bot.on_message(filters.command(["balance", "order", "status"]))
+    async def smm_commands(client: Client, message: Message):
+        user_key = db_get_api_key(message.from_user.id)
+        if not user_key:
+            await message.reply("❌ Please `/login <your_api_key>` first.")
+            return
+            
+        cmd = message.command
+        if cmd[0] == "balance":
+            resp = await smm_api.get_balance(user_key)
+            if "balance" in resp:
+                await message.reply(f"💰 **Balance:** {resp['balance']} {resp.get('currency', 'USD')}")
+            else:
+                await message.reply(f"❌ Error: {resp.get('error', 'Unknown')}")
+                
+        elif cmd[0] == "order":
+            if len(cmd) < 4:
+                await message.reply("Usage: `/order <service_id> <link> <quantity>`")
+                return
+            resp = await smm_api.place_order(user_key, cmd[1], cmd[2], cmd[3])
+            if "order" in resp:
+                await message.reply(f"✅ **Order Placed!**\nOrder ID: `{resp['order']}`")
+            else:
+                await message.reply(f"❌ Error: {resp.get('error', 'Unknown')}")
+                
+        elif cmd[0] == "status":
+            if len(cmd) < 2:
+                await message.reply("Usage: `/status <order_id>`")
+                return
+            resp = await smm_api.get_status(user_key, cmd[1])
+            if "status" in resp:
+                msg = f"📊 **Order Status:** {resp['status']}\n"
+                msg += f"Charge: {resp.get('charge', '0')}\n"
+                msg += f"Remains: {resp.get('remains', '0')}"
+                await message.reply(msg)
+            else:
+                await message.reply(f"❌ Error: {resp.get('error', 'Unknown')}")
+
+# ---------------------------------------------------------------------------
+# Debug Logger — trace all incoming messages to find the exact Chat ID
+# ---------------------------------------------------------------------------
+@app.on_message(filters.all, group=-1)
+async def log_all_incoming(client: Client, message: Message):
+    chat_id = message.chat.id if message.chat else "Unknown"
+    logger.info(f"DEBUG: Received message from chat {chat_id}")
 
 # ---------------------------------------------------------------------------
 # Helper — forward a single (non-album) message to the destination
@@ -327,72 +390,6 @@ async def _forward_single(client: Client, message: Message, reply_to=None):
     # Unsupported type (poll, venue, location, etc.) — log and skip
     logger.info(f"Skipping unsupported message type for message {message.id}")
     return None
-
-
-import smm_api
-
-# ---------------------------------------------------------------------------
-# SMM Panel Commands (Public Bot Token)
-# ---------------------------------------------------------------------------
-@smm_bot.on_message(filters.command(["login"]))
-async def handle_login(client: Client, message: Message):
-    cmd = message.command
-    if len(cmd) < 2:
-        await message.reply("Usage: `/login <your_api_key>`")
-        return
-    db_save_api_key(message.from_user.id, cmd[1])
-    await message.reply("✅ Successfully logged in! You can now use `/balance` or place orders.")
-
-@smm_bot.on_message(filters.command(["logout"]))
-async def handle_logout(client: Client, message: Message):
-    db_delete_api_key(message.from_user.id)
-    await message.reply("✅ Successfully logged out.")
-
-@smm_bot.on_message(filters.command(["balance", "order", "status"]))
-async def smm_commands(client: Client, message: Message):
-    user_key = db_get_api_key(message.from_user.id)
-    if not user_key:
-        await message.reply("❌ Please `/login <your_api_key>` first.")
-        return
-        
-    cmd = message.command
-    if cmd[0] == "balance":
-        resp = await smm_api.get_balance(user_key)
-        if "balance" in resp:
-            await message.reply(f"💰 **Balance:** {resp['balance']} {resp.get('currency', 'USD')}")
-        else:
-            await message.reply(f"❌ Error: {resp.get('error', 'Unknown')}")
-            
-    elif cmd[0] == "order":
-        if len(cmd) < 4:
-            await message.reply("Usage: `/order <service_id> <link> <quantity>`")
-            return
-        resp = await smm_api.place_order(user_key, cmd[1], cmd[2], cmd[3])
-        if "order" in resp:
-            await message.reply(f"✅ **Order Placed!**\nOrder ID: `{resp['order']}`")
-        else:
-            await message.reply(f"❌ Error: {resp.get('error', 'Unknown')}")
-            
-    elif cmd[0] == "status":
-        if len(cmd) < 2:
-            await message.reply("Usage: `/status <order_id>`")
-            return
-        resp = await smm_api.get_status(user_key, cmd[1])
-        if "status" in resp:
-            msg = f"📊 **Order Status:** {resp['status']}\n"
-            msg += f"Charge: {resp.get('charge', '0')}\n"
-            msg += f"Remains: {resp.get('remains', '0')}"
-            await message.reply(msg)
-        else:
-            await message.reply(f"❌ Error: {resp.get('error', 'Unknown')}")
-
-# ---------------------------------------------------------------------------
-# Debug Logger — trace all incoming messages to find the exact Chat ID
-# ---------------------------------------------------------------------------
-@app.on_message(filters.all, group=-1)
-async def log_all_incoming(client: Client, message: Message):
-    chat_id = message.chat.id if message.chat else "Unknown"
-    logger.info(f"DEBUG: Received message from chat {chat_id}")
 
 # ---------------------------------------------------------------------------
 # Handler — new messages
@@ -565,7 +562,8 @@ from pyrogram import idle
 
 async def run_bot():
     await app.start()
-    await smm_bot.start()
+    if smm_bot:
+        await smm_bot.start()
     logger.info("Caching peers to fix 'Peer id invalid' errors...")
     try:
         # Iterating through dialogs forces Pyrogram to cache all channel IDs from Telegram
@@ -574,14 +572,15 @@ async def run_bot():
     except Exception as e:
         logger.error(f"Failed to cache peers: {e}")
     
-    logger.info("Both Bots are fully ready and listening for messages!")
+    logger.info("Bot is fully ready and listening for messages!")
     await idle()
     await app.stop()
-    await smm_bot.stop()
+    if smm_bot:
+        await smm_bot.stop()
 
 if __name__ == "__main__":
-    if not API_ID or not API_HASH or not SESSION_STRING or not BOT_TOKEN:
-        logger.error("Missing API_ID, API_HASH, SESSION_STRING, or BOT_TOKEN! Cannot start bot.")
+    if not API_ID or not API_HASH or not SESSION_STRING:
+        logger.error("Missing API_ID, API_HASH, or SESSION_STRING! Cannot start bot.")
     else:
         logger.info("Starting Web Server...")
         Thread(target=run_web, daemon=True).start()
