@@ -57,7 +57,21 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 raw_sources = f"{os.environ.get('SOURCE_CHANNEL_IDS', '')},{os.environ.get('SOURCE_CHANNEL_ID', '')}"
 if not raw_sources.replace(',', '').strip():
     raw_sources = "-1003405576403"
-SOURCE_CHANNELS = list(set(int(x.strip()) for x in raw_sources.split(",") if x.strip()))
+
+SOURCE_CHANNELS = []
+for item in raw_sources.split(","):
+    item = item.strip()
+    if not item:
+        continue
+    if "t.me/" in item:
+        item = item.split("t.me/")[-1].strip("/")
+    try:
+        SOURCE_CHANNELS.append(int(item))
+    except ValueError:
+        SOURCE_CHANNELS.append(item.lstrip("@"))
+
+# Deduplicate
+SOURCE_CHANNELS = list(dict.fromkeys(SOURCE_CHANNELS))
 logger.info(f"Configured SOURCE_CHANNELS: {SOURCE_CHANNELS}")
 DESTINATION_CHANNEL = int(os.environ.get("DESTINATION_CHANNEL_ID", "-1003912457227"))
 logger.info(f"Configured DESTINATION_CHANNEL: {DESTINATION_CHANNEL}")
@@ -339,10 +353,11 @@ if BOT_TOKEN:
 # ---------------------------------------------------------------------------
 # Debug Logger — trace all incoming messages to find the exact Chat ID
 # ---------------------------------------------------------------------------
-@app.on_message(filters.all, group=-1)
+@app.on_message(group=-1)
 async def log_all_incoming(client: Client, message: Message):
+    chat_title = message.chat.title if message.chat else "Private/User"
     chat_id = message.chat.id if message.chat else "Unknown"
-    logger.info(f"DEBUG: Received message from chat {chat_id}")
+    logger.info(f"DEBUG: Received message ID {message.id} from chat '{chat_title}' (ID: {chat_id})")
 
 # ---------------------------------------------------------------------------
 # Helper — forward a single (non-album) message to the destination
@@ -564,15 +579,28 @@ async def run_bot():
     await app.start()
     if smm_bot:
         await smm_bot.start()
-    logger.info("Caching peers to fix 'Peer id invalid' errors...")
+
+    logger.info("Verifying and caching channels on Telegram...")
     try:
-        # Iterating through dialogs forces Pyrogram to cache all channel IDs from Telegram
-        async for _ in app.get_dialogs():
+        async for _ in app.get_dialogs(limit=50):
             pass
     except Exception as e:
-        logger.error(f"Failed to cache peers: {e}")
+        logger.warning(f"Dialogs cache notice: {e}")
+
+    for ch in SOURCE_CHANNELS:
+        try:
+            chat = await app.get_chat(ch)
+            logger.info(f"✅ Source channel connected: '{chat.title}' (ID: {chat.id}, Username: @{chat.username})")
+        except Exception as e:
+            logger.error(f"❌ Could not fetch source channel '{ch}': {e}")
+
+    try:
+        dest_chat = await app.get_chat(DESTINATION_CHANNEL)
+        logger.info(f"✅ Destination channel connected: '{dest_chat.title}' (ID: {dest_chat.id})")
+    except Exception as e:
+        logger.error(f"❌ Could not fetch destination channel '{DESTINATION_CHANNEL}': {e}")
     
-    logger.info("Bot is fully ready and listening for messages!")
+    logger.info("Bot is fully ready and actively listening for messages!")
     await idle()
     await app.stop()
     if smm_bot:
