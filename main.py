@@ -560,100 +560,6 @@ async def handle_edited_message(client: Client, message: Message):
 
 
 # ---------------------------------------------------------------------------
-# Hourly Catch-Up Scraper
-# Fetches missed messages from source channels (last ~70 min) and forwards
-# any that weren't already forwarded (checked via message_map_v2 DB).
-# Runs once on startup, then every 60 minutes.
-# ---------------------------------------------------------------------------
-SCRAPE_WINDOW_SECONDS = 70 * 60   # 70 min window (slight overlap avoids gaps)
-SCRAPE_INTERVAL_SECONDS = 60 * 60  # re-run every hour
-
-async def _scrape_channel(client: Client, channel):
-    """Scrape and forward missed messages from a single channel."""
-    from datetime import datetime, timezone, timedelta
-
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=SCRAPE_WINDOW_SECONDS)
-    forwarded = 0
-    skipped = 0
-
-    try:
-        async for message in client.get_chat_history(channel, limit=200):
-            # Messages are returned newest-first; stop once we go past the window
-            if message.date < cutoff:
-                break
-
-            # Skip if already forwarded
-            if db_get(message.chat.id, message.id) is not None:
-                skipped += 1
-                continue
-
-            # Apply filter
-            text_to_check = message.caption if message.media else message.text
-            if contains_filter_word(text_to_check):
-                skipped += 1
-                continue
-
-            # Skip service messages (pins, joins, etc.) with no text/media
-            if not message.text and not message.media:
-                skipped += 1
-                continue
-
-            # Albums — forward as group via existing album buffer logic
-            if message.media_group_id:
-                gid = str(message.media_group_id)
-                _album_buffer.setdefault(gid, []).append(message)
-                if gid in _album_tasks and not _album_tasks[gid].done():
-                    _album_tasks[gid].cancel()
-                _album_tasks[gid] = asyncio.create_task(_flush_album(client, gid))
-                continue
-
-            # Single message
-            reply_to = None
-            if message.reply_to_message_id:
-                reply_to = db_get(message.chat.id, message.reply_to_message_id)
-
-            try:
-                sent_msg = await _forward_single(client, message, reply_to=reply_to)
-                if sent_msg:
-                    db_set(message.chat.id, message.id, sent_msg.id)
-                    forwarded += 1
-                    logger.info(f"[scraper] Caught up msg {message.id} -> {sent_msg.id} in {channel}")
-            except FloodWait as e:
-                logger.warning(f"[scraper] FloodWait {e.value}s, pausing...")
-                await asyncio.sleep(e.value)
-                try:
-                    sent_msg = await _forward_single(client, message, reply_to=reply_to)
-                    if sent_msg:
-                        db_set(message.chat.id, message.id, sent_msg.id)
-                        forwarded += 1
-                        logger.info(f"[scraper] Caught up msg {message.id} -> {sent_msg.id} after FloodWait")
-                except Exception as e2:
-                    logger.error(f"[scraper] Failed msg {message.id} after FloodWait retry: {e2}")
-            except Exception as e:
-                logger.error(f"[scraper] Failed to forward msg {message.id}: {e}")
-
-            await asyncio.sleep(0.5)  # small delay between sends to avoid rate limits
-
-    except Exception as e:
-        logger.error(f"[scraper] Error iterating channel {channel}: {e}")
-        return
-
-    logger.info(f"[scraper] Channel {channel}: forwarded={forwarded}, skipped={skipped}")
-
-
-async def hourly_scrape(client: Client):
-    """Background task: scrape missed messages once on startup, then every hour."""
-    # Brief delay to let the bot fully connect first
-    await asyncio.sleep(10)
-    while True:
-        logger.info("[scraper] Starting hourly catch-up scrape...")
-        for channel in SOURCE_CHANNELS:
-            await _scrape_channel(client, channel)
-        logger.info("[scraper] Hourly scrape complete. Next run in 60 minutes.")
-        await asyncio.sleep(SCRAPE_INTERVAL_SECONDS)
-
-
-# ---------------------------------------------------------------------------
 # Dummy Web Server — keeps Render alive (UptimeRobot pings this)
 # ---------------------------------------------------------------------------
 flask_app = Flask(__name__)
@@ -675,6 +581,11 @@ async def run_bot():
         await smm_bot.start()
 
     logger.info("Verifying and caching channels on Telegram...")
+    try:
+        async for _ in app.get_dialogs(limit=50):
+            pass
+    except Exception as e:
+        logger.warning(f"Dialogs cache notice: {e}")
 
     for ch in SOURCE_CHANNELS:
         try:
@@ -690,18 +601,10 @@ async def run_bot():
         logger.error(f"❌ Could not fetch destination channel '{DESTINATION_CHANNEL}': {e}")
     
     logger.info("Bot is fully ready and actively listening for messages!")
-
-    # Launch hourly catch-up scraper in the background
-    scraper_task = asyncio.create_task(hourly_scrape(app))
-    logger.info("✅ Hourly scraper task started.")
-
-    try:
-        await idle()
-    finally:
-        scraper_task.cancel()
-        await app.stop()
-        if smm_bot:
-            await smm_bot.stop()
+    await idle()
+    await app.stop()
+    if smm_bot:
+        await smm_bot.stop()
 
 if __name__ == "__main__":
     if not API_ID or not API_HASH or not SESSION_STRING:
