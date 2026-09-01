@@ -1,0 +1,25 @@
+name: Auto-Scraper (Every 10m)
+
+on:
+  schedule:
+    # Runs every 10 minutes to keep bot alive and confirm it's running
+    - cron: "*/10 * * * *"
+  workflow_dispatch:  # allow manual trigger from GitHub UI
+
+jobs:
+  ping-and-scrape:
+    name: Keep Bot Alive & Trigger Scrape
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Ping bot health endpoint
+        run: |
+          echo "Pinging bot at ${{ secrets.BOT_URL }}"
+          STATUS=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 "${{ secrets.BOT_URL }}" || echo "000")
+          echo "Response status: $STATUS"
+          if [ "$STATUS" = "200" ]; then
+            echo "✅ Bot is alive and running."
+          else
+            echo "⚠️  Bot returned status $STATUS — may be sleeping or restarting."
+          fi
